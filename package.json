@@ -1,0 +1,22 @@
+{
+  "name": "dnd-discord",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.25.0",
+    "@llm-tools/embedjs": "^0.0.93",
+    "axios": "^1.7.2",
+    "claude-ai": "^1.2.2",
+    "discord.js": "^14.15.3",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "vectordb": "^0.7.1"
+  }
+}

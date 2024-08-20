@@ -1,0 +1,6 @@
+.aider*
+db
+data
+messageHistory.db
+node_modules
+config.js
