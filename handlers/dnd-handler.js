@@ -2,6 +2,7 @@ import { PermissionsBitField, AttachmentBuilder, EmbedBuilder } from 'discord.js
 import { storeMessage, getRoomHistory, getCampaignSummary, markOldestMessagesAsDeleted, getCharacterProfiles, storeCampaignSummary, storeCharacterProfile, initRAGApplication } from '../database.js';
 import axios from 'axios';
 import AnthropicClient from '@anthropic-ai/sdk';
+import { generateImage, generateImagePrompt } from '../imageGenerator.js';
 
 const rollDice = (diceNotation) => {
   const [num, sides] = diceNotation.split('d').map(Number);
@@ -227,41 +228,13 @@ export const handleDndMessage = async (message, roomId, userId, client) => {
     try {
       const situationSummary = userMessages.map(msg => msg.content).join(' ');
       const dmResponse = textResponse.trim();
-      let imageGenerationPrompt = `
-              Generate a prompt describing an im image based on the following situation summary and DM response:
-              Situation Summary: ${situationSummary}
-              DM Response: ${dmResponse}
-
-              The prompt should be written like comma separated set of phrases, use descriptors and styles but don't use flowery language.
-              You can use parentheses followed by a number ex:(phrase)1.2 where the thing is something you want to emphasize and the number is between 1.1 and 2.0 level of emphasis
-              You can add ++ which squares the importance or +++ to cube it
-          `;
-
-      if (operationMode === 'battle') {
-        imageGenerationPrompt += 'The image shoule use a battle map style if it makes sense for the current situation.';
-      } else {
-        imageGenerationPrompt += 'The image should be clear and detailed, highlighting an aspect of the current situation.'
-      }
-
-      const ragImageResponse = await ragApplication.query(imageGenerationPrompt);
-      const generatedImageDescription = ragImageResponse.content.trim();
+      
+      const generatedImageDescription = await generateImagePrompt(ragApplication, situationSummary, dmResponse, operationMode);
 
       console.log('Generated image description:', generatedImageDescription);
       if (generatedImageDescription) {
         const [prompt, negativePrompt] = generatedImageDescription.split('NEGATIVE:');
-        const response = await axios.post('http://192.168.1.178:7860/sdapi/v1/txt2img', {
-          prompt: prompt.trim() + ' Anime art style <lora:1g0rXLP:1>',
-          width: 1024,
-          height: 1024, // Maintain aspect ratio
-          steps: 25,
-          negative_prompt: negativePrompt ? negativePrompt.trim() : ''
-        });
-
-        const imageBuffer = Buffer.from(response.data.images[0], 'base64');
-        const attachment = new AttachmentBuilder(imageBuffer, { name: 'generated_image.png' });
-
-        const embed = new EmbedBuilder()
-          .setImage('attachment://generated_image.png');
+        const { embed, attachment } = await generateImage(prompt, negativePrompt);
 
         console.log('Sending generated image to channel...');
         message.channel.send({ embeds: [embed], files: [attachment] });

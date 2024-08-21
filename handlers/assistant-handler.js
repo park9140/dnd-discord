@@ -1,14 +1,13 @@
 import { storeMessage, getRoomHistory, initRAGApplication } from '../database.js';
 import { PermissionsBitField } from 'discord.js';
+import { generateImage } from '../imageGenerator.js';
 
 const USER_ID_FORMAT_INSTRUCTION = 'When responding to users format the response as <@userId> example <@376578314694819850>';
 
 export const handleAssistantMessage = async (message, roomId, userId, client) => {
-  if (!message.content.includes(`<@${client.userId}>`)) return;
-
   try {
     console.log(`Received message from ${message.author.id} in channel ${message.channel.id}: ${message.content}`);
-    const processedContent = message.content.replace(`<@${client.userId}>`, '').trim();
+    const processedContent = message.content.trim();
 
     await storeMessage(roomId, userId, 'user', processedContent);
 
@@ -27,19 +26,24 @@ export const handleAssistantMessage = async (message, roomId, userId, client) =>
     const userMessages = roomHistory.map(msg => `<@${msg.userId}>: ${msg.content}`).join('\n');
     const prompt = `
       You are a helpful assistant. Respond in short order.
-      If the query requires a specialist, respond with only the text 'specialist_id: <specialist_id>'.
-      Repalce <specialist_id> with an id from this list of specialists:
+      Respond with only the text 'specialist_id: <specialist_id>'.
+      Replace <specialist_id> with an id from this list of specialists:
       - code_specialist: For coding related queries.
       - travel_specialist: For travel related queries.
       - finance_specialist: For finance related queries.
       - health_specialist: For health related queries.
       - education_specialist: For education related queries.
+      - image_generation_specialist: For generating images based on descriptions.
+      - no_response: If the query doesn't require a response or is not something the bot can help with.
 
-      Here is the recent conversation history:
-      ${userMessages}
+      Here is the most recent message:
       <@${userId}>: ${processedContent}
 
-      ${USER_ID_FORMAT_INSTRUCTION}
+      If the most recent message indicates a continuation of a previous request, consider this additional context:
+      ${userMessages}
+
+      When determining the specialist, prioritize the content of the most recent message.
+      Only use earlier messages if they provide necessary context for understanding the current request.
     `;
 
     const response = await ragApplication.query(prompt);
@@ -48,6 +52,12 @@ export const handleAssistantMessage = async (message, roomId, userId, client) =>
     const regex = /specialist_id:\s*(\w+)/;
     if (responseText.match(regex)) {
       const specialistId = responseText.match(regex)[1];
+      
+      if (specialistId === 'no_response') {
+        console.log('No response required. Exiting.');
+        return;
+      }
+
       let specialistPrompt = '';
       console.log(`Utilizing specialist ${specialistId} for response...`);
       switch (specialistId) {
@@ -111,6 +121,26 @@ export const handleAssistantMessage = async (message, roomId, userId, client) =>
             ${USER_ID_FORMAT_INSTRUCTION}
           `;
           break;
+        case 'image_generation_specialist':
+          specialistPrompt = `
+            You are a highly skilled image generation specialist. Your task is to create a detailed prompt for image generation based on the user's description.
+            The prompt should be written as a comma-separated set of phrases, using descriptors and styles but avoiding flowery language.
+            You can use parentheses followed by a number ex:(phrase)1.2 where the phrase is something you want to emphasize and the number is between 1.1 and 2.0 level of emphasis.
+            You can add ++ which squares the importance or +++ to cube it.
+            For negative features, use -- followed by the feature, e.g. "--ugly", to indicate elements that should not be included in the image.
+            
+            After creating the prompt, choose a random aspect ratio from the following options:
+            1:1 (square), 4:3, 3:2, 16:9, 21:9 (ultrawide), 3:4 (portrait), 2:3 (portrait), 9:16 (portrait)
+            
+            Also, generate a random seed number between 0 and 4294967295.
+            
+            Query: ${processedContent}
+            Respond with the image generation prompt, followed by the aspect ratio and seed on new lines, like this:
+            [Your generated prompt here]
+            aspectratio:[chosen aspect ratio]
+            seed:[generated seed number]
+          `;
+          break;
         default:
           specialistPrompt = `
             You are a highly skilled assistant with broad knowledge across multiple disciplines.
@@ -122,14 +152,45 @@ export const handleAssistantMessage = async (message, roomId, userId, client) =>
           `;
       }
 
+      await message.channel.sendTyping();
       const specialistResponse = await ragApplication.query(specialistPrompt);
-      await message.channel.send(specialistResponse.content.trim());
+      
+      if (specialistId === 'image_generation_specialist') {
+        const imagePrompt = specialistResponse.content.trim();
+        console.log('Generated image prompt:', imagePrompt);
+        
+        try {
+          const [prompt, negativePrompt] = imagePrompt.split('NEGATIVE:');
+          await message.channel.sendTyping();
+          
+          // Start a separate process to send typing indicator every 9 seconds
+          const typingInterval = setInterval(() => {
+            message.channel.sendTyping().catch(console.error);
+          }, 9000);
+          
+          const { embed, attachment } = await generateImage(prompt, negativePrompt);
+          
+          // Clear the typing interval
+          clearInterval(typingInterval);
+          
+          console.log('Sending generated image to channel...');
+          await message.channel.send({ embeds: [embed], files: [attachment] });
+          console.log('Generated image sent to channel.');
+          
+          await storeMessage(roomId, client.user.id, 'assistant', `Image generated based on the following prompt: ${imagePrompt}`);
+        } catch (error) {
+          console.error('Error generating image:', error);
+          await message.channel.send('Sorry, I encountered an error while generating the image.');
+        }
+      } else {
+        await message.channel.send(specialistResponse.content.trim());
+      }
     } else {
       await message.channel.send(responseText);
     }
 
     await storeMessage(roomId, client.user.id, 'assistant', responseText);
-    console.log('Assistant response sent and added to room history.');
+    console.log('Assistant response sent and added to room history');
   } catch (error) {
     console.error('Error processing assistant message:', error);
     message.channel.send('OOPS I DONE GOOFED');
